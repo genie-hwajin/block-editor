@@ -449,14 +449,30 @@
                 : 0.25;
         const offset = Math.max(0, Math.min(1, computedOffset));
 
-        let relativeX = 1, relativeY = offset;
+        // [FIX] E/W측 포트는 offset(0.15~0.85)을 박스 "전체 높이"에 곱한 위치에 배치되는데,
+        // 이러면 짧은 박스(포트만 있고 compartment가 거의 없는 경우)에서 offset이 낮을 때
+        // (예: 포트 1개면 offset=0.25) 제목 라벨 영역(헤더)과 겹치게 됨.
+        // 헤더 높이(headerClearance)만큼 먼저 확보해두고, 그 아래 남는 공간에만 offset 비율을 적용해
+        // 박스 높이에 관계없이 항상 헤더 아래에 배치되도록 함.
+        const headerClearance = DS_bn?.borderNode?.headerClearance ?? 44;
+        const parentHeight = parentGeo.height || 0;
+        const usableHeight = Math.max(1, parentHeight - headerClearance);
+        const ewRelativeY = parentHeight > 0
+            ? Math.min(1, (headerClearance + offset * usableHeight) / parentHeight)
+            : offset;
+
+        let relativeX = 1, relativeY = ewRelativeY;
         let geoOffsetX = -size / 2, geoOffsetY = -size / 2;
         let portConstraint = 'eastwest';
 
         switch (side) {
             case 'N':
+                // [FIX] N측(direction='in'/'inout'인 포트가 자동으로 배정됨)은 relativeY=0으로
+                // 박스의 "맨 위 경계선"에 고정되는데, 이는 컨테이너 제목이 그려지는 위치와 정확히 겹침.
+                // 박스 높이와 무관하게 항상 겹치므로(E/W측과 달리 offset 비율 문제가 아님),
+                // relativeY는 0으로 두되 절대 픽셀 오프셋(geoOffsetY)으로 headerClearance만큼 아래로 밀어냄.
                 relativeX = offset; relativeY = 0;
-                geoOffsetX = -size / 2; geoOffsetY = -size / 2;
+                geoOffsetX = -size / 2; geoOffsetY = headerClearance - size / 2;
                 portConstraint = 'northsouth';
                 break;
             case 'S':
@@ -465,12 +481,12 @@
                 portConstraint = 'northsouth';
                 break;
             case 'W':
-                relativeX = 0; relativeY = offset;
+                relativeX = 0; relativeY = ewRelativeY;
                 geoOffsetX = -size / 2; geoOffsetY = -size / 2;
                 portConstraint = 'eastwest';
                 break;
             case 'E': default:
-                relativeX = 1; relativeY = offset;
+                relativeX = 1; relativeY = ewRelativeY;
                 geoOffsetX = -size / 2; geoOffsetY = -size / 2;
                 portConstraint = 'eastwest';
                 break;

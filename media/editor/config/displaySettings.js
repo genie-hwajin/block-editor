@@ -86,6 +86,10 @@
             spacingBottom: 2,              // mxGraph 라벨 하단 간격
             minSpacing: 16,               // 보더노드 간 최소 간격 (px)
             sideMargin: 16,               // 노드 가장자리~첫/마지막 보더노드 여백 (px)
+            // [FIX] E/W측 포트를 박스 전체 높이 대비 비율(offset)로 배치할 때, 제목 라벨(«stereotype»+이름 2줄=44px) 영역을
+            // 침범하지 않도록 헤더 영역만큼 미리 확보한 뒤 그 아래 나머지 공간에만 offset 비율을 적용하기 위한 값.
+            // MxEdgeBuilder.js createBorderNode() 참고.
+            headerClearance: 44,
         },
 
         // ─── FreeForm Compartment 메트릭 (action flow, parts 등) ─
@@ -117,25 +121,25 @@
             modelOrderStrategy: 'NODES_AND_EDGES',
             compactionStrategy: 'EDGE_LENGTH',
             // 간격
-            nodeNodeSpacing: 100,           // 동일 레이어 내 노드 간 간격
-            nodeNodeBetweenLayers: 80,    // 레이어 사이 노드 간 간격
+            nodeNodeSpacing: 60,           // 동일 레이어 내 노드 간 간격 [TUNED] 100->60: 밀도 개선을 위해 축소
+            nodeNodeBetweenLayers: 40,    // 레이어 사이 노드 간 간격 [TUNED] 80->40: 밀도 개선을 위해 축소
             componentComponentSpacing: 80, // 연결 컴포넌트 간 간격 (엣지 없는 독립 노드 그룹 사이)
             edgeNodeBetweenLayers: 40,     // 레이어 사이 엣지-노드 간 간격
             edgeNodeSpacing: 40,           // 동일 레이어 내 엣지-노드 간 간격
             edgeEdgeSpacing: 15,           // 엣지-엣지 간 최소 간격
             edgeEdgeBetweenLayers: 15,     // 레이어 간 엣지-엣지 간격
             thoroughness: 7,               // 레이아웃 품질 (높을수록 정확)
-            mergeEdges: false,             // 같은 방향 엣지 병합
+            mergeEdges: true,              // 같은 방향 엣지 병합 [TUNED] false->true: 겹치는 구간을 합쳐 경로 단순성 개선
             mergeHierarchyEdges: false,    // 계층 엣지 병합
             compactConnectedComponents: true, // 연결된 컴포넌트 압축
             // 컨테이너 내부 간격 (actor 등 엣지 없는 자식 노드 간 세로 간격)
             containerChildSpacing: 40,
             // 컨테이너 내부 패딩
             containerPadding: {
-                top: 60,                   // 기본 상단 패딩
-                left: 40,                  // 좌측 패딩
-                right: 40,                 // 우측 패딩
-                bottom: 40,                // 기본 하단 패딩
+                top: 44,                   // 기본 상단 패딩 [TUNED] 60->16->30->44: 컨테이너 제목이 «stereotype»/이름 2줄로 렌더링될 때 MxCompartmentRenderer.js가 실제로 쓰는 라벨 높이는 2*lineHeight(14)+paddingVertical(16)=44임. 30으로는 여전히 부족해 포트만 있고 attribute compartment가 없는 컨테이너(RenderEngine, LoadBalancer 등)에서 제목/포트 라벨이 겹쳤음. 렌더러의 2줄 라벨 실제 높이에 맞춰 44로 재조정 (원래 60 대비 캔버스 면적 증가는 +15% 수준으로 완화됨).
+                left: 12,                  // 좌측 패딩 [TUNED] 40->12
+                right: 12,                 // 우측 패딩 [TUNED] 40->12
+                bottom: 12,                // 기본 하단 패딩 [TUNED] 40->12
                 ifActionTop: 90,           // IfAction 상단 패딩 (조건 라벨 공간)
                 whileLoopBottom: 70,       // WhileLoop 하단 패딩 (until 조건 공간)
             },

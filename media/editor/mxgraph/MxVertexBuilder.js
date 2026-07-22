@@ -249,7 +249,16 @@
         label = override.label;
 
         // 자식이 있는 컨테이너 노드: 타이틀을 상단에 배치
-        if (hasGraphChildren && style.includes('verticalAlign=middle')) {
+        // [FIX] 기존에는 hasGraphChildren(실제 .parent 자식이 있는 경우)만 체크했음.
+        // 그런데 compartment(attribute def 등)나 border node(포트)만 있고 실제 자식은 없는
+        // 노드(RenderEngine, LoadBalancer 등)는 verticalAlign이 'middle'로 남아서, 타이틀이
+        // 박스 세로 중앙에 렌더링됨. 반면 MxCompartmentRenderer.js는 타이틀이 항상 "상단"에
+        // 있다고 가정하고 그 아래(y=labelHeight)에 compartment/ports 섹션을 배치하므로,
+        // 실제로는 세로 중앙에 있는 타이틀과 겹치는 버그가 있었음.
+        // compartment나 border node가 있는 경우에도 상단 정렬하도록 조건 확장.
+        const hasCompartmentsOrPorts = (Array.isArray(node?.compartments) && node.compartments.length > 0) ||
+            (Array.isArray(node?.borderNodes) && node.borderNodes.length > 0);
+        if ((hasGraphChildren || hasCompartmentsOrPorts) && style.includes('verticalAlign=middle')) {
             style = style.replace('verticalAlign=middle', 'verticalAlign=top');
         }
 

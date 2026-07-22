@@ -6,6 +6,11 @@
 (function() {
   const NS = (window.SELAB = window.SELAB || {});
 
+  // 레이아웃 품질 지표(노드 겹침/엣지 교차/캔버스 밀도/엣지 종단 명확성) 콘솔 로깅 스위치.
+  // 과제의 8개 품질 기준을 개발 중 수치로 검증하기 위해 추가한 로직으로, 코드는 남겨두되
+  // 평소 사용 시 콘솔에 로그가 쌓이지 않도록 기본값은 false. 필요 시 true로 바꿔서 확인 가능.
+  const DEBUG_LAYOUT_METRICS = false;
+
   /**
    * Apply ELK (Eclipse Layout Kernel) layout to the given in-memory diagram data.
    * diagramData: { elements: [{id, name, width, height, x, y}], connections: [{id, source, target}] }
@@ -77,7 +82,8 @@
           'elk.layered.compaction.postCompaction.strategy': ELK_CFG?.compactionStrategy ?? 'EDGE_LENGTH',
           'elk.layered.compaction.connectedComponents': String(ELK_CFG?.compactConnectedComponents ?? true),
           'elk.layered.thoroughness': String(ELK_CFG?.thoroughness ?? 7),
-          'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER'
+          'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
+          'elk.hierarchyHandling': 'INCLUDE_CHILDREN'
         }, options || {});
 
       // Fork 병렬 분기 감지: fork 후속 노드 간 flow 엣지는 ELK 레이어 제약에서 제외
@@ -146,19 +152,10 @@
           if (!s || !t || s === t) {
             continue;
           }
-          // cross-container featuretyping 엣지는 ELK에서 제외
-          // (내부→외부 연결이 컨테이너 레이아웃을 왜곡하므로 mxGraph auto-routing에 위임)
-          // 단, composition 타겟 노드의 featuretyping은 같은 레벨로 승격되므로 포함
-          if (kindLower === 'featuretyping') {
-            const sNode = nodeById.get(s);
-            const tNode = nodeById.get(t);
-            const sIsCompositionTarget = compositionTargets && compositionTargets.has(s);
-            if (!sIsCompositionTarget) {
-              const sParent = sNode?.parent || '';
-              const tParent = tNode?.parent || '';
-              if (sParent !== tParent) continue;
-            }
-          }
+          // [FIX] 예전에는 컨테이너를 가로지르는 featuretyping 엣지를 ELK에서 제외하고
+          // mxGraph 자동 라우팅에 떠넘겼음(엣지가 아예 안 그려지는 원인이었음).
+          // 지금은 elk.hierarchyHandling=INCLUDE_CHILDREN이 정상 동작하므로
+          // ELK가 계층을 가로지르는 엣지도 직접 라우팅할 수 있어 이 예외 처리가 더는 필요 없음.
           const pairKey = `${s}__${t}`;
           seenPairs.add(pairKey);
           kept.push({ id: e.id || pairKey, sources: [s], targets: [t] });
@@ -504,10 +501,10 @@
                   'elk.spacing.componentComponent': childSpacing,
                   'elk.layered.spacing.edgeNodeBetweenLayers': edgeNodeBL,
                   'elk.spacing.edgeNode': edgeNodeSp,
-                  'elk.algorithm': ELK_CFG?.algorithm ?? 'layered',
-                  'elk.direction': ELK_CFG?.direction ?? 'DOWN',
                   'elk.edgeRouting': ELK_CFG?.edgeRouting ?? 'ORTHOGONAL',
-                  'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
+                  // [FIX] 'elk.layered.cycleBreaking.strategy'를 컨테이너마다 또 지정하면
+                  // elk.hierarchyHandling=INCLUDE_CHILDREN 과 충돌하여 elkjs 0.11.1에서 내부 크래시가 발생함
+                  // (root의 finalLayoutOptions에 이미 설정되어 있고 하위로 상속되므로 여기서는 생략)
                   'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED'
               };
 
@@ -758,6 +755,42 @@
       }
       applyPositions(result, 0, 0);
 
+      // [DEBUG] 노드 겹침(overlap) 탐지 - 부모/자식 관계가 아닌 노드끼리 사각형이 겹치는지 확인
+      if (DEBUG_LAYOUT_METRICS) {
+        const isAncestor = (aId, bId) => {
+          let cur = parentOf.get(bId);
+          while (cur) {
+            if (cur === aId) return true;
+            cur = parentOf.get(cur);
+          }
+          return false;
+        };
+        const positioned = diagramData.elements.filter(n => typeof n.x === 'number' && typeof n.width === 'number');
+        const overlaps = [];
+        for (let i = 0; i < positioned.length; i++) {
+          for (let j = i + 1; j < positioned.length; j++) {
+            const a = positioned[i], b = positioned[j];
+            if (isAncestor(a.id, b.id) || isAncestor(b.id, a.id)) continue; // 부모-자식 중첩은 정상이므로 제외
+            const overlapX = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+            const overlapY = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+            if (overlapX > 1 && overlapY > 1) {
+              overlaps.push({
+                a: `${a.id} (${a.name})`,
+                aParent: parentOf.get(a.id) || '(root)',
+                b: `${b.id} (${b.name})`,
+                bParent: parentOf.get(b.id) || '(root)',
+                overlapX: Math.round(overlapX),
+                overlapY: Math.round(overlapY),
+              });
+            }
+          }
+        }
+        console.log(`[DEBUG elkLayout] 배치된 노드 수=${positioned.length}, 겹침 쌍 수=${overlaps.length}`);
+        if (overlaps.length > 0) {
+          console.log('[DEBUG elkLayout] 겹치는 노드 쌍 목록:', overlaps);
+        }
+      }
+
       /**
        * ELK 엣지 라우팅 결과를 diagramData.connections에 적용
        * @param {Object} elkNode - ELK 레이아웃 결과 노드
@@ -823,6 +856,136 @@
 
       // Apply edge routing from ELK
       applyEdgeRouting(result, 0, 0);
+
+      // [DEBUG] 엣지 교차 횟수 / 엣지-노드 중첩 횟수 자동 측정
+      // (과제 품질 기준 중 "선 교차 최소화", "엣지-노드 중첩 없음"을 숫자로 확인하기 위함)
+      if (DEBUG_LAYOUT_METRICS) {
+        const segmentsOf = (waypoints) => {
+          const segs = [];
+          for (let i = 0; i < waypoints.length - 1; i++) segs.push([waypoints[i], waypoints[i + 1]]);
+          return segs;
+        };
+
+        // 축 정렬(수평/수직) 선분 2개가 교차하는지 판정
+        const segsIntersect = (a1, a2, b1, b2) => {
+          const aH = Math.abs(a1.y - a2.y) < 0.5;
+          const bH = Math.abs(b1.y - b2.y) < 0.5;
+          if (aH === bH) return false; // 평행선은 (단순화를 위해) 교차로 안 셈
+          const h = aH ? { y: a1.y, x1: Math.min(a1.x, a2.x), x2: Math.max(a1.x, a2.x) } : { y: b1.y, x1: Math.min(b1.x, b2.x), x2: Math.max(b1.x, b2.x) };
+          const v = aH ? { x: b1.x, y1: Math.min(b1.y, b2.y), y2: Math.max(b1.y, b2.y) } : { x: a1.x, y1: Math.min(a1.y, a2.y), y2: Math.max(a1.y, a2.y) };
+          const EPS = 0.5;
+          return h.x1 - EPS <= v.x && v.x <= h.x2 + EPS && v.y1 - EPS <= h.y && h.y <= v.y2 + EPS;
+        };
+
+        // 선분이 사각형 "내부"를 관통하는지 판정 (경계에 살짝 닿는 건 정상이므로 제외)
+        const segmentCrossesRectInterior = (p1, p2, rect, margin) => {
+          const isHorizontal = Math.abs(p1.y - p2.y) < 0.5;
+          if (isHorizontal) {
+            const y = p1.y;
+            if (!(y > rect.y1 + margin && y < rect.y2 - margin)) return false;
+            const xMin = Math.min(p1.x, p2.x), xMax = Math.max(p1.x, p2.x);
+            return xMax > rect.x1 + margin && xMin < rect.x2 - margin;
+          } else {
+            const x = p1.x;
+            if (!(x > rect.x1 + margin && x < rect.x2 - margin)) return false;
+            const yMin = Math.min(p1.y, p2.y), yMax = Math.max(p1.y, p2.y);
+            return yMax > rect.y1 + margin && yMin < rect.y2 - margin;
+          }
+        };
+
+        const isAncestorOrSelf = (containerId, nodeId) => {
+          let cur = nodeId;
+          while (cur) {
+            if (cur === containerId) return true;
+            cur = parentOf.get(cur) || null;
+          }
+          return false;
+        };
+
+        const conns = (diagramData.connections || []).filter(c => Array.isArray(c.waypoints) && c.waypoints.length >= 2);
+
+        // 1) 엣지끼리 교차 횟수
+        let crossingCount = 0;
+        const crossingPairs = [];
+        for (let i = 0; i < conns.length; i++) {
+          for (let j = i + 1; j < conns.length; j++) {
+            const c1 = conns[i], c2 = conns[j];
+            const sharesEndpoint = c1.source === c2.source || c1.source === c2.target || c1.target === c2.source || c1.target === c2.target;
+            if (sharesEndpoint) continue; // 같은 노드에서 만나는 건 자연스러운 것이므로 제외
+            const segs1 = segmentsOf(c1.waypoints);
+            const segs2 = segmentsOf(c2.waypoints);
+            let found = false;
+            for (const [a1, a2] of segs1) {
+              for (const [b1, b2] of segs2) {
+                if (segsIntersect(a1, a2, b1, b2)) { found = true; break; }
+              }
+              if (found) break;
+            }
+            if (found) { crossingCount++; crossingPairs.push({ a: c1.id, b: c2.id }); }
+          }
+        }
+
+        // 2) 엣지가 관계없는 노드 위를 지나가는 횟수
+        let edgeNodeOverlapCount = 0;
+        const edgeNodeOverlaps = [];
+        const positionedNodes = diagramData.elements.filter(n => typeof n.x === 'number' && typeof n.width === 'number');
+        const MARGIN = 2;
+        for (const c of conns) {
+          const segs = segmentsOf(c.waypoints);
+          for (const n of positionedNodes) {
+            if (n.id === c.source || n.id === c.target) continue;
+            if (isAncestorOrSelf(n.id, c.source) || isAncestorOrSelf(n.id, c.target)) continue;
+            const rect = { x1: n.x, y1: n.y, x2: n.x + n.width, y2: n.y + n.height };
+            const hit = segs.some(([p1, p2]) => segmentCrossesRectInterior(p1, p2, rect, MARGIN));
+            if (hit) { edgeNodeOverlapCount++; edgeNodeOverlaps.push({ edge: c.id, node: n.id }); }
+          }
+        }
+
+        console.log(`[DEBUG elkLayout] 엣지 교차 수=${crossingCount}, 엣지-노드 중첩 수=${edgeNodeOverlapCount}`);
+        if (crossingCount > 0) console.log('[DEBUG elkLayout] 교차하는 엣지 쌍:', crossingPairs);
+        if (edgeNodeOverlapCount > 0) console.log('[DEBUG elkLayout] 노드를 지나가는 엣지:', edgeNodeOverlaps);
+
+        // 3) 캔버스 밀도 (전체 바운딩박스 대비 leaf 노드 면적 비율) - "균일한 간격/여백" 비교용
+        // 컨테이너(children이 있는 노드)는 면적 계산에서 제외하고 leaf 노드만 집계
+        const leafNodes = positionedNodes.filter(n => !diagramData.elements.some(other => other.parent === n.id));
+        const leafArea = leafNodes.reduce((sum, n) => sum + n.width * n.height, 0);
+        const minX = Math.min(...positionedNodes.map(n => n.x));
+        const minY = Math.min(...positionedNodes.map(n => n.y));
+        const maxX = Math.max(...positionedNodes.map(n => n.x + n.width));
+        const maxY = Math.max(...positionedNodes.map(n => n.y + n.height));
+        const boundingArea = (maxX - minX) * (maxY - minY);
+        const density = boundingArea > 0 ? (leafArea / boundingArea) : 0;
+        console.log(`[DEBUG elkLayout] 캔버스 크기=${Math.round(maxX - minX)}x${Math.round(maxY - minY)}, leaf 노드 면적 합=${Math.round(leafArea)}, 밀도=${(density * 100).toFixed(1)}%`);
+
+        // 4) 엣지 종단 명확성: 엣지의 시작점/끝점이 소스/타겟 노드 경계에 정확히 붙어있는지 확인
+        const TOL = 4; // px 허용 오차
+        const isOnRectBoundary = (px, py, rect) => {
+          const nearX = Math.abs(px - rect.x1) <= TOL || Math.abs(px - rect.x2) <= TOL;
+          const nearY = Math.abs(py - rect.y1) <= TOL || Math.abs(py - rect.y2) <= TOL;
+          const withinYRange = py >= rect.y1 - TOL && py <= rect.y2 + TOL;
+          const withinXRange = px >= rect.x1 - TOL && px <= rect.x2 + TOL;
+          return (nearX && withinYRange) || (nearY && withinXRange);
+        };
+        let badEndpoints = 0;
+        const badEndpointList = [];
+        for (const c of conns) {
+          const sNode = nodeById.get(c.source);
+          const tNode = nodeById.get(c.target);
+          if (!sNode || !tNode) continue;
+          const sRect = { x1: sNode.x, y1: sNode.y, x2: sNode.x + sNode.width, y2: sNode.y + sNode.height };
+          const tRect = { x1: tNode.x, y1: tNode.y, x2: tNode.x + tNode.width, y2: tNode.y + tNode.height };
+          const startPt = c.waypoints[0];
+          const endPt = c.waypoints[c.waypoints.length - 1];
+          const startOk = isOnRectBoundary(startPt.x, startPt.y, sRect);
+          const endOk = isOnRectBoundary(endPt.x, endPt.y, tRect);
+          if (!startOk || !endOk) {
+            badEndpoints++;
+            badEndpointList.push({ edge: c.id, source: c.source, target: c.target, startOk, endOk });
+          }
+        }
+        console.log(`[DEBUG elkLayout] 엣지 종단 불명확 수=${badEndpoints} / 전체 엣지 ${conns.length}개`);
+        if (badEndpoints > 0) console.log('[DEBUG elkLayout] 종단이 불명확한 엣지:', badEndpointList);
+      }
 
       // Post-process: align nodes in the same container & rank horizontally
       // RE-ENABLED: ELK spacing을 고려하도록 개선된 alignRanks 사용

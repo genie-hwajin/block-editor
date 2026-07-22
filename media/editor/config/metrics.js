@@ -86,7 +86,21 @@
      */
     function countTextLines(text) {
         if (!text) return 1;
-        const lines = String(text).split('\n').filter(Boolean);
+        const str = String(text);
+
+        // [FIX] MxLabelUtils.js의 formatLabel()은 스테레오타입을 '\n'이 아니라
+        // `<div>«part def»</div>이름` 형태의 HTML로 감싸서 반환함. 그래서 '\n' 기준으로만
+        // 세면 항상 1줄로 잡혀 labelHeight가 실제보다 작게 계산되고, ports 등 compartment
+        // 섹션이 제목 2번째 줄(이름)과 겹치는 버그로 이어졌음.
+        // <div>...</div> 블록은 한 줄로 세고, 그 뒤에 남는 텍스트(이름)가 있으면 추가로 세어준다.
+        const divMatches = str.match(/<div[^>]*>[\s\S]*?<\/div>/g);
+        if (divMatches && divMatches.length > 0) {
+            const remainder = str.replace(/<div[^>]*>[\s\S]*?<\/div>/g, '').trim();
+            const remainderLines = remainder ? remainder.split('\n').filter(Boolean).length : 0;
+            return divMatches.length + remainderLines || 1;
+        }
+
+        const lines = str.split('\n').filter(Boolean);
         return lines.length || 1;
     }
 
@@ -220,8 +234,48 @@
      * @returns {number} 계산된 높이 (픽셀)
      */
     function calculateBorderNodesHeight(borderNodes) {
-        // Border Node는 일반 노드와 동일하게 ELK spacing으로 처리
-        return 0;
+        // [FIX] 기존에는 항상 0을 반환했음 -> E/W측 보더노드가 있는(포트만 있고 compartment는 없는)
+        // 컴팩트한 컨테이너(RenderEngine, LoadBalancer, SmartMeter 등)에서 포트끼리 또는 포트와
+        // 제목 라벨이 겹치는 버그의 원인 중 하나였음.
+        // 제목 라벨과의 겹침 자체는 MxEdgeBuilder.js createBorderNode()가 headerClearance를
+        // 별도로 확보하도록 고쳤으므로(그쪽 [FIX] 참고), 여기서는 같은 side에 여러 포트가
+        // 세로로 쌓일 때 서로 겹치지 않도록 여유 공간만 계산한다.
+        // (layout.js 3a의 N/S측 폭 계산과 대칭되는 E/W측 높이 버전)
+        if (!Array.isArray(borderNodes) || borderNodes.length === 0) return 0;
+
+        const BN = DS?.borderNode;
+        const bnSize = BN?.size ?? 12;
+        const bnMinSpacing = BN?.minSpacing ?? 16;
+        const bnSideMargin = BN?.sideMargin ?? 16;
+
+        const sideCounts = {};
+        let hasNS = false;
+        for (const bn of borderNodes) {
+            const side = String(bn.side || 'E').toUpperCase();
+            if (side === 'E' || side === 'W') {
+                sideCounts[side] = (sideCounts[side] || 0) + 1;
+            } else if (side === 'N' || side === 'S') {
+                hasNS = true;
+            }
+        }
+        const maxEWCount = Object.values(sideCounts).reduce((m, c) => Math.max(m, c), 0);
+
+        let ewExtra = 0;
+        if (maxEWCount > 0) {
+            ewExtra = maxEWCount * (bnSize + bnMinSpacing) - bnMinSpacing + 2 * bnSideMargin;
+        }
+
+        // [FIX] N측 포트(direction='in'/'inout'인 경우 자동 배정)는 MxEdgeBuilder.js에서
+        // headerClearance만큼 아래로 밀어서 배치하므로, 포트 자신 + 라벨 한 줄이 박스 안에
+        // 들어갈 여유 공간을 별도로 확보해야 함 (안 그러면 라벨이 박스 바깥으로 삐져나감).
+        let nsExtra = 0;
+        if (hasNS) {
+            const spTop = BN?.spacingTop ?? 2;
+            const spBot = BN?.spacingBottom ?? 2;
+            nsExtra = bnSize + spTop + spBot + LABEL_METRICS.LINE_HEIGHT + 8;
+        }
+
+        return Math.max(ewExtra, nsExtra);
     }
 
     /**

@@ -109,9 +109,14 @@
                 const paddingVertical = DS?.label?.paddingVertical ?? 16;
                 labelHeight = totalLines * lineHeight + paddingVertical;
             } else {
-                const labelText = nodeData?.name || '';
+                // [FIX] nodeData.name만으로 계산하면 실제로 렌더링되는 «stereotype» 줄이 빠져서
+                // labelHeight가 실제 제목 높이보다 작게 잡히고, 그 결과 ports 등 compartment
+                // 섹션이 제목 2번째 줄(이름)과 겹치는 버그가 있었음(_wrappedStereotype/_wrappedName
+                // 캐시가 비어있는 노드에서 발생). vertex에 실제로 설정된 라벨 값(줄바꿈 포함)을
+                // 그대로 사용해 정확한 줄 수를 계산한다.
+                const actualLabel = typeof vertex.value === 'string' ? vertex.value : (nodeData?.name || '');
                 labelHeight = metrics?.calculateLabelHeight
-                    ? metrics.calculateLabelHeight(labelText)
+                    ? metrics.calculateLabelHeight(actualLabel)
                     : 30;
             }
 
